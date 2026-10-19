@@ -1,0 +1,23 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Word / Office documents (do not commit documents)
+*.docx
+*.doc
+*.pdf
+~$*.docx
+~$*.doc
+*.tmp
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE & OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
