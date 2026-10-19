@@ -6,14 +6,17 @@ Chương trình Thạc sĩ - Môn: Nhận dạng mẫu
 Mục tiêu:
 1. Xây dựng pipeline hoàn chỉnh gồm Tiền xử lý dữ liệu (Imputation, Standardization)
    và Giảm chiều đặc trưng bằng PCA (Principal Component Analysis).
-2. So sánh mô hình cơ sở (Dummy Baseline) với 7 mô hình hồi quy đại diện cho các họ thuật toán:
+2. So sánh mô hình cơ sở (Dummy Baseline) với 8 mô hình hồi quy đại diện cho các họ thuật toán:
    - Mô hình tuyến tính: Linear Regression, Ridge, Lasso
    - Mô hình dựa trên khoảng cách (Instance-based): K-Nearest Neighbors (KNN)
    - Mô hình cây quyết định: Decision Tree
    - Mô hình kết hợp (Ensemble): Random Forest, HistGradientBoosting
    - Mô hình máy vector hỗ trợ: Support Vector Regression (SVR)
-3. Đánh giá toàn diện trên 3 chỉ số: MAE, RMSE, R² và độ ổn định (std) qua 5-Fold Cross-Validation.
-4. Đánh giá chuyên sâu tác động của PCA:
+3. Chia dữ liệu Train (80%) / Test hold-out (20%). Mọi phân tích, so sánh và lựa chọn
+   mô hình chỉ dùng tập Train qua 5-Fold Cross-Validation (MAE, RMSE, R² và độ ổn định std).
+4. Lựa chọn mô hình tự động theo hạng trung bình của MAE, RMSE, R² và độ ổn định qua CV,
+   sau đó huấn luyện lại trên toàn bộ tập Train và đánh giá MỘT LẦN trên tập Test hold-out.
+5. Đánh giá chuyên sâu tác động của PCA:
    - Phân tích phương sai tích lũy (Cumulative Explained Variance).
    - So sánh trực tiếp từng mô hình (Có PCA vs Không có PCA).
    - Khảo sát biến thiên hiệu năng theo số chiều PCA k in [1, 2, ..., 8].
@@ -39,7 +42,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from sklearn.datasets import fetch_california_housing
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
+from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
@@ -69,6 +73,7 @@ plt.rcParams.update({
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "results")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 RANDOM_STATE = 42
+TEST_SIZE = 0.2
 
 
 def load_and_explore_data():
@@ -120,6 +125,7 @@ def analyze_pca_variance(X):
     """
     Phân tích tỷ lệ phương sai giải thích (Explained Variance Ratio) của PCA
     trên dữ liệu sau khi chuẩn hóa bằng StandardScaler.
+    Chỉ dùng tập Train để không rò rỉ thông tin từ tập Test vào việc chọn k.
     """
     print("\n" + "=" * 80)
     print("2. PHÂN TÍCH GIẢM CHIỀU PCA (PRINCIPAL COMPONENT ANALYSIS)")
@@ -143,6 +149,12 @@ def analyze_pca_variance(X):
     # Xác định số chiều đạt ngưỡng 90% và 95%
     k_90 = int(np.argmax(cum_var_ratio >= 0.90) + 1)
     k_95 = int(np.argmax(cum_var_ratio >= 0.95) + 1)
+    pd.DataFrame({
+        "PC": [f"PC{i+1}" for i in range(len(var_ratio))],
+        "Eigenvalue": pca.explained_variance_,
+        "Variance_Ratio": var_ratio,
+        "Cumulative_Ratio": cum_var_ratio,
+    }).to_csv(os.path.join(OUTPUT_DIR, "pca_variance.csv"), index=False)
     print(f"\n[*] Để giữ lại >= 90% thông tin phương sai: cần k = {k_90} thành phần chính.")
     print(f"[*] Để giữ lại >= 95% thông tin phương sai: cần k = {k_95} thành phần chính.")
 
@@ -182,7 +194,7 @@ def analyze_pca_variance(X):
     plt.close()
     print(f"[✓] Đã lưu biểu đồ PCA Variance tại: {pca_plot_path}")
 
-    # Lựa chọn k = 5 (giữ lại ~90% variance) cho các thực nghiệm so sánh chính
+    # Chọn k nhỏ nhất giữ lại >= 90% phương sai cho các thực nghiệm so sánh chính
     return k_90
 
 
@@ -248,10 +260,10 @@ def run_model_comparison(X, y, k_pca=5):
     Chạy thực nghiệm so sánh tất cả các mô hình:
     1. Tiền xử lý (Imputer + Scaler) -> Mô hình (Không dùng PCA)
     2. Tiền xử lý (Imputer + Scaler) -> PCA (k thành phần) -> Mô hình (Có PCA)
-    Sử dụng 5-Fold Cross-Validation để đánh giá độ chính xác và độ ổn định.
+    Sử dụng 5-Fold Cross-Validation trên tập Train để đánh giá độ chính xác và độ ổn định.
     """
     print("\n" + "=" * 80)
-    print(f"3. THỰC NGHIỆM SO SÁNH CÁC MÔ HÌNH HỒI QUY (5-FOLD CV, k_PCA = {k_pca})")
+    print(f"3. THỰC NGHIỆM SO SÁNH CÁC MÔ HÌNH HỒI QUY (5-FOLD CV TRÊN TẬP TRAIN, k_PCA = {k_pca})")
     print("=" * 80)
 
     cv = KFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
@@ -324,21 +336,55 @@ def run_model_comparison(X, y, k_pca=5):
     return df_results
 
 
+def select_best_model(df_results):
+    """
+    Lựa chọn mô hình dựa trên kết quả CV (chỉ dùng tập Train):
+    xếp hạng mọi cấu hình (trừ Dummy Baseline) theo 4 tiêu chí
+      - MAE_Mean  (thấp hơn tốt hơn)
+      - RMSE_Mean (thấp hơn tốt hơn)
+      - R2_Mean   (cao hơn tốt hơn)
+      - R2_Std    (thấp hơn = ổn định hơn qua các fold)
+    rồi chọn cấu hình có hạng trung bình nhỏ nhất (hòa thì ưu tiên RMSE_Mean thấp hơn).
+    """
+    print("\n" + "=" * 80)
+    print("4. LỰA CHỌN MÔ HÌNH THEO MAE / RMSE / R² / ĐỘ ỔN ĐỊNH QUA CV")
+    print("=" * 80)
+
+    df_rank = df_results[df_results["Model"] != "Dummy Baseline"].copy()
+    df_rank["Rank_MAE"] = df_rank["MAE_Mean"].rank(method="min")
+    df_rank["Rank_RMSE"] = df_rank["RMSE_Mean"].rank(method="min")
+    df_rank["Rank_R2"] = df_rank["R2_Mean"].rank(method="min", ascending=False)
+    df_rank["Rank_Stability"] = df_rank["R2_Std"].rank(method="min")
+    df_rank["Avg_Rank"] = df_rank[["Rank_MAE", "Rank_RMSE", "Rank_R2", "Rank_Stability"]].mean(axis=1)
+    df_rank = df_rank.sort_values(by=["Avg_Rank", "RMSE_Mean"]).reset_index(drop=True)
+
+    cols = ["Model", "PCA", "Rank_MAE", "Rank_RMSE", "Rank_R2", "Rank_Stability", "Avg_Rank"]
+    print(df_rank[cols].to_string(index=False))
+
+    rank_path = os.path.join(OUTPUT_DIR, "model_ranking.csv")
+    df_rank[cols + ["MAE_Mean", "RMSE_Mean", "R2_Mean", "R2_Std"]].to_csv(rank_path, index=False)
+    print(f"[✓] Đã xuất bảng xếp hạng mô hình tại: {rank_path}")
+
+    best = df_rank.iloc[0]
+    print(f"\n[★] Mô hình được chọn: {best['Model']} | {best['PCA']} "
+          f"(hạng trung bình = {best['Avg_Rank']:.2f})")
+    return best["Model"], best["PCA"].startswith("Yes")
+
+
 def run_pca_dimension_sweep(X, y):
     """
     Thực nghiệm kiểm tra tác động của số chiều PCA k biến thiên từ 1 đến 8
     trên 3 mô hình tiêu biểu: Linear Regression, Random Forest, và HistGradientBoosting.
+    Dùng đúng siêu tham số như thực nghiệm so sánh chính để kết quả có thể đối chiếu.
     """
     print("\n" + "=" * 80)
-    print("4. KHẢO SÁT TÁC ĐỘNG CỦA SỐ LƯỢNG THÀNH PHẦN PCA (k = 1..8)")
+    print("5. KHẢO SÁT TÁC ĐỘNG CỦA SỐ LƯỢNG THÀNH PHẦN PCA (k = 1..8)")
     print("=" * 80)
 
     cv = KFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-    models_to_test = {
-        "Linear Regression": LinearRegression(),
-        "Random Forest": RandomForestRegressor(n_estimators=40, max_depth=10, random_state=RANDOM_STATE, n_jobs=2),
-        "HistGradientBoosting": HistGradientBoostingRegressor(max_iter=60, random_state=RANDOM_STATE)
-    }
+    all_models = get_models()
+    models_to_test = {name: all_models[name]
+                      for name in ["Linear Regression", "Random Forest", "HistGradientBoosting"]}
 
     n_features = X.shape[1]
     sweep_results = []
@@ -363,6 +409,7 @@ def run_pca_dimension_sweep(X, y):
             })
 
     df_sweep = pd.DataFrame(sweep_results)
+    df_sweep.to_csv(os.path.join(OUTPUT_DIR, "pca_sweep_results.csv"), index=False)
 
     # Vẽ biểu đồ PCA Component Sweep
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5))
@@ -402,19 +449,30 @@ def run_pca_dimension_sweep(X, y):
     return df_sweep
 
 
-def plot_visualizations(df_results, X, y):
+def build_pipeline(model, k_pca=None):
+    """Pipeline chuẩn: Imputer -> Scaler -> [PCA] -> Regressor."""
+    steps = [
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+    ]
+    if k_pca is not None:
+        steps.append(("pca", PCA(n_components=k_pca, random_state=RANDOM_STATE)))
+    steps.append(("regressor", model))
+    return Pipeline(steps)
+
+
+def plot_visualizations(df_results, k_pca):
     """
-    Tạo các biểu đồ trực quan hóa kết quả:
+    Tạo các biểu đồ trực quan hóa kết quả CV trên tập Train:
     1. model_comparison.png: So sánh các mô hình trên R2, RMSE, MAE kèm sai số std (CV).
     2. pca_impact.png: Tác động của PCA trên từng mô hình.
-    3. actual_vs_predicted.png: Phân bố dự báo vs thực tế giữa mô hình tốt nhất và Dummy Baseline.
     """
     print("\n" + "=" * 80)
-    print("5. TRỰC QUAN HÓA KẾT QUẢ VÀ SO SÁNH MÔ HÌNH")
+    print("6. TRỰC QUAN HÓA KẾT QUẢ VÀ SO SÁNH MÔ HÌNH")
     print("=" * 80)
 
     # 1. So sánh tổng quan (Không có PCA)
-    df_no_pca = df_results[df_results["PCA"] == "No (Full 8D)"].copy()
+    df_no_pca = df_results[df_results["PCA"].str.startswith("No")].copy()
     df_no_pca = df_no_pca.sort_values(by="R2_Mean", ascending=True)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
@@ -451,12 +509,14 @@ def plot_visualizations(df_results, X, y):
 
     sub_no = df_results[df_results["PCA"].str.startswith("No")].set_index("Model").loc[model_names]
     sub_yes = df_results[df_results["PCA"].str.startswith("Yes")].set_index("Model").loc[model_names]
+    label_no = "Không dùng PCA (8 chiều)"
+    label_yes = f"Có dùng PCA ({k_pca} chiều)"
 
     # R2 Comparison
     axes[0].bar(x_indices - width/2, sub_no["R2_Mean"], width, yerr=sub_no["R2_Std"],
-                capsize=3, label="Không dùng PCA (8 chiều)", color="#3498db", alpha=0.9)
+                capsize=3, label=label_no, color="#3498db", alpha=0.9)
     axes[0].bar(x_indices + width/2, sub_yes["R2_Mean"], width, yerr=sub_yes["R2_Std"],
-                capsize=3, label="Có dùng PCA (5 chiều)", color="#e67e22", alpha=0.9)
+                capsize=3, label=label_yes, color="#e67e22", alpha=0.9)
     axes[0].set_ylabel("R² Score")
     axes[0].set_title("Tác động của PCA lên Hệ số xác định R²")
     axes[0].set_xticks(x_indices)
@@ -465,9 +525,9 @@ def plot_visualizations(df_results, X, y):
 
     # RMSE Comparison
     axes[1].bar(x_indices - width/2, sub_no["RMSE_Mean"], width, yerr=sub_no["RMSE_Std"],
-                capsize=3, label="Không dùng PCA (8 chiều)", color="#3498db", alpha=0.9)
+                capsize=3, label=label_no, color="#3498db", alpha=0.9)
     axes[1].bar(x_indices + width/2, sub_yes["RMSE_Mean"], width, yerr=sub_yes["RMSE_Std"],
-                capsize=3, label="Có dùng PCA (5 chiều)", color="#e67e22", alpha=0.9)
+                capsize=3, label=label_yes, color="#e67e22", alpha=0.9)
     axes[1].set_ylabel("RMSE ($100k)")
     axes[1].set_title("Tác động của PCA lên Sai số RMSE")
     axes[1].set_xticks(x_indices)
@@ -479,50 +539,74 @@ def plot_visualizations(df_results, X, y):
     plt.close()
     print(f"[✓] Đã lưu biểu đồ tác động PCA tại: {pca_impact_path}")
 
-    # 3. Biểu đồ Actual vs Predicted (Hold-out Test Fold)
-    print("[*] Đang vẽ biểu đồ phân tán Giá trị thực tế vs Dự báo (Actual vs Predicted)...")
-    from sklearn.model_selection import train_test_split
-    X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=RANDOM_STATE)
 
-    # Huấn luyện Dummy Baseline và Mô hình tốt nhất (HistGradientBoosting hoặc RandomForest)
-    dummy_pipe = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
-        ("model", DummyRegressor(strategy="mean"))
-    ])
-    dummy_pipe.fit(X_tr, y_tr)
-    y_pred_dummy = dummy_pipe.predict(X_te)
+def evaluate_on_test(X_train, X_test, y_train, y_test, best_name, best_use_pca, k_pca):
+    """
+    Đánh giá cuối cùng trên tập Test hold-out (chưa từng được dùng ở các bước trước):
+    - Dummy Baseline
+    - Mô hình được chọn qua CV (đúng cấu hình đã chọn)
+    - Cùng mô hình đó ở cấu hình PCA còn lại (để kiểm chứng tác động của PCA trên dữ liệu mới)
+    Mỗi pipeline được huấn luyện lại trên TOÀN BỘ tập Train rồi dự báo trên tập Test.
+    """
+    print("\n" + "=" * 80)
+    print("7. ĐÁNH GIÁ CUỐI CÙNG TRÊN TẬP TEST HOLD-OUT")
+    print("=" * 80)
 
-    best_pipe = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
-        ("model", HistGradientBoostingRegressor(max_iter=100, random_state=RANDOM_STATE))
-    ])
-    best_pipe.fit(X_tr, y_tr)
-    y_pred_best = best_pipe.predict(X_te)
+    models = get_models()
+    configs = [
+        ("Dummy Baseline", None, "Baseline"),
+        (best_name, k_pca if best_use_pca else None, "Mô hình được chọn"),
+        (best_name, None if best_use_pca else k_pca, "Đối chứng PCA"),
+    ]
+
+    rows = []
+    predictions = {}
+    for name, k, role in configs:
+        pipe = build_pipeline(clone(models[name]), k)
+        pipe.fit(X_train, y_train)
+        preds = pipe.predict(X_test)
+        pca_label = f"Yes (PCA {k}D)" if k is not None else "No (Full 8D)"
+        rows.append({
+            "Role": role,
+            "Model": name,
+            "PCA": pca_label,
+            "MAE": mean_absolute_error(y_test, preds),
+            "RMSE": root_mean_squared_error(y_test, preds),
+            "R2": r2_score(y_test, preds),
+        })
+        predictions[role] = preds
+
+    df_test = pd.DataFrame(rows)
+    print(df_test.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
+    test_path = os.path.join(OUTPUT_DIR, "test_results.csv")
+    df_test.to_csv(test_path, index=False)
+    print(f"[✓] Đã xuất kết quả tập Test tại: {test_path}")
+
+    # Biểu đồ Actual vs Predicted trên tập Test
+    y_pred_dummy = predictions["Baseline"]
+    y_pred_best = predictions["Mô hình được chọn"]
+    best_label = f"{best_name} ({'PCA ' + str(k_pca) + 'D' if best_use_pca else 'không PCA'})"
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-    # Dummy Baseline plot
-    axes[0].scatter(y_te, y_pred_dummy, alpha=0.25, color='#e74c3c', s=15)
-    axes[0].plot([y_te.min(), y_te.max()], [y_te.min(), y_te.max()], 'k--', lw=2, label="Đường lý tưởng (y = y_pred)")
-    axes[0].set_title(f"Baseline (Dummy Mean)\nMAE = {mean_absolute_error(y_te, y_pred_dummy):.3f}, R² = {r2_score(y_te, y_pred_dummy):.3f}")
-    axes[0].set_xlabel("Giá trị thực tế ($100k)")
-    axes[0].set_ylabel("Giá trị dự báo ($100k)")
-    axes[0].legend()
-
-    # Best Model plot
-    axes[1].scatter(y_te, y_pred_best, alpha=0.3, color='#2980b9', s=15)
-    axes[1].plot([y_te.min(), y_te.max()], [y_te.min(), y_te.max()], 'k--', lw=2, label="Đường lý tưởng (y = y_pred)")
-    axes[1].set_title(f"Mô hình tối ưu (HistGradientBoosting)\nMAE = {mean_absolute_error(y_te, y_pred_best):.3f}, R² = {r2_score(y_te, y_pred_best):.3f}")
-    axes[1].set_xlabel("Giá trị thực tế ($100k)")
-    axes[1].set_ylabel("Giá trị dự báo ($100k)")
-    axes[1].legend()
+    for ax, preds, title, color, alpha in [
+        (axes[0], y_pred_dummy, "Baseline (Dummy Mean)", '#e74c3c', 0.25),
+        (axes[1], y_pred_best, f"Mô hình được chọn: {best_label}", '#2980b9', 0.3),
+    ]:
+        ax.scatter(y_test, preds, alpha=alpha, color=color, s=15)
+        ax.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'k--', lw=2,
+                label="Đường lý tưởng (y = y_pred)")
+        ax.set_title(f"{title} — Tập Test\nMAE = {mean_absolute_error(y_test, preds):.3f}, "
+                     f"R² = {r2_score(y_test, preds):.3f}")
+        ax.set_xlabel("Giá trị thực tế ($100k)")
+        ax.set_ylabel("Giá trị dự báo ($100k)")
+        ax.legend()
 
     actual_pred_path = os.path.join(OUTPUT_DIR, "actual_vs_predicted.png")
     plt.savefig(actual_pred_path, dpi=300)
     plt.close()
-    print(f"[✓] Đã lưu biểu đồ Actual vs Predicted tại: {actual_pred_path}")
+    print(f"[✓] Đã lưu biểu đồ Actual vs Predicted (tập Test) tại: {actual_pred_path}")
+
+    return df_test
 
 
 def main():
@@ -534,17 +618,28 @@ def main():
     # Bước 1: Load dữ liệu & EDA
     X, y = load_and_explore_data()
 
-    # Bước 2: Phân tích PCA Variance
-    k_pca = analyze_pca_variance(X)
+    # Bước 2: Tách tập Test hold-out (20%) — chỉ dùng ở bước đánh giá cuối cùng
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE)
+    print(f"\n[*] Chia dữ liệu: Train = {len(X_train)} mẫu, Test hold-out = {len(X_test)} mẫu")
 
-    # Bước 3: Đánh giá so sánh các mô hình (có và không có PCA)
-    df_results = run_model_comparison(X, y, k_pca=k_pca)
+    # Bước 3: Phân tích PCA Variance (trên tập Train)
+    k_pca = analyze_pca_variance(X_train)
 
-    # Bước 4: Khảo sát số chiều PCA k biến thiên từ 1 đến 8
-    df_sweep = run_pca_dimension_sweep(X, y)
+    # Bước 4: Đánh giá so sánh các mô hình (có và không có PCA) bằng CV trên tập Train
+    df_results = run_model_comparison(X_train, y_train, k_pca=k_pca)
 
-    # Bước 5: Trực quan hóa và kết luận
-    plot_visualizations(df_results, X, y)
+    # Bước 5: Lựa chọn mô hình theo MAE/RMSE/R²/độ ổn định
+    best_name, best_use_pca = select_best_model(df_results)
+
+    # Bước 6: Khảo sát số chiều PCA k biến thiên từ 1 đến 8 (trên tập Train)
+    run_pca_dimension_sweep(X_train, y_train)
+
+    # Bước 7: Trực quan hóa kết quả CV
+    plot_visualizations(df_results, k_pca)
+
+    # Bước 8: Đánh giá cuối cùng trên tập Test hold-out
+    evaluate_on_test(X_train, X_test, y_train, y_test, best_name, best_use_pca, k_pca)
 
     print("\n" + "=" * 80)
     print(f"HOÀN THÀNH TOÀN BỘ QUY TRÌNH TRONG: {time.time() - total_t0:.2f} GIÂY")

@@ -4,12 +4,18 @@ cho Bài tập 1 - Môn Nhận dạng mẫu (Pattern Recognition) - Thạc sĩ.
 
 Chiến lược ghép bìa:
   - Mở BÌA TIỂU LUẬN.docx làm tài liệu GỐC (giữ nguyên logo, font, định dạng).
+  - Thay tiêu đề / tên môn học trên bìa cho đúng Bài tập 1 - Nhận dạng mẫu.
   - Thêm page break sau bìa rồi nối toàn bộ nội dung báo cáo vào ngay sau.
   - Lưu đè ra Bao_cao_Bai_tap_1.docx.
+
+Mọi số liệu trong báo cáo được đọc trực tiếp từ các file CSV trong thư mục results/
+(do regression_pipeline.py sinh ra), nên phải chạy regression_pipeline.py trước.
 """
 
 import os
 import sys
+
+import pandas as pd
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -29,8 +35,64 @@ RESULTS_DIR = os.path.join(BASE_DIR, "results")
 BIA_PATH    = os.path.join(BASE_DIR, "BÌA TIỂU LUẬN.docx")
 DOCX_PATH   = os.path.join(BASE_DIR, "Bao_cao_Bai_tap_1.docx")
 
+# Nội dung trang bìa cần thay (file bìa gốc là mẫu dùng chung cho các môn khác)
+COVER_REPLACEMENTS = {
+    "BÀI TIỂU LUẬN": "BÁO CÁO BÀI TẬP 1",
+    "MÔN: TRIẾT HỌC MÁC - LÊNIN": "MÔN: NHẬN DẠNG MẪU",
+}
+
+DISPLAY_NAMES = {"Support Vector Regressor": "SVR (nhân RBF)"}
+TARGET_MEAN   = 2.0686   # Giá trị trung bình MedHouseVal trên toàn bộ dữ liệu ($100k)
+
+
+# ─────────────────────────────── DỮ LIỆU KẾT QUẢ ──────────────────────────────
+
+def load_results():
+    """Đọc toàn bộ kết quả thực nghiệm do regression_pipeline.py xuất ra."""
+    def read(name):
+        path = os.path.join(RESULTS_DIR, name)
+        if not os.path.exists(path):
+            sys.exit(f"[!] Thiếu {path}. Hãy chạy 'python regression_pipeline.py' trước.")
+        return pd.read_csv(path)
+
+    return {
+        "cv":       read("results_summary.csv"),
+        "rank":     read("model_ranking.csv"),
+        "sweep":    read("pca_sweep_results.csv"),
+        "test":     read("test_results.csv"),
+        "variance": read("pca_variance.csv"),
+    }
+
+def vn(x, d=4):
+    """Định dạng số theo kiểu Việt Nam: dấu phẩy thập phân, dấu trừ chuẩn."""
+    s = f"{x:,.{d}f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    return s.replace("-", "−")
+
+def pm(mean, std, d=4):
+    return f"{vn(mean, d)} ± {vn(std, d)}"
+
+def usd(x_100k):
+    """Đổi giá trị đơn vị 100.000 USD sang chuỗi USD làm tròn đến hàng chục."""
+    return vn(round(x_100k * 100000, -1), 0) + " USD"
+
 
 # ─────────────────────────────── UTILITY FUNCTIONS ────────────────────────────
+
+def fix_cover(doc):
+    """Sửa tiêu đề và tên môn học trên trang bìa (giữ nguyên định dạng run)."""
+    for p in doc.paragraphs:
+        text = p.text.strip()
+        if text in COVER_REPLACEMENTS and p.runs:
+            p.runs[0].text = COVER_REPLACEMENTS[text]
+            for r in p.runs[1:]:
+                r.text = ""
+
+def set_row_flags(row, header=False):
+    """Không cho dòng bị tách qua 2 trang; dòng tiêu đề được lặp lại ở đầu trang mới."""
+    trPr = row._tr.get_or_add_trPr()
+    trPr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
+    if header:
+        trPr.append(parse_xml(f'<w:tblHeader {nsdecls("w")}/>'))
 
 def set_cell_background(cell, fill_hex):
     tcPr = cell._element.get_or_add_tcPr()
@@ -257,6 +319,7 @@ def add_separator(doc):
     pPr.append(pBdr)
 
 def make_header_row(table, headers, widths, bg="1F4E79", font_size=10):
+    set_row_flags(table.rows[0], header=True)
     row = table.rows[0].cells
     for i, (title, w) in enumerate(zip(headers, widths)):
         c       = row[i]
@@ -277,6 +340,7 @@ def fill_data_rows(table, data, widths, start_row=1,
                    highlight_row=None, highlight_color="E6F4EA",
                    col_aligns=None, font_size=10):
     for ri, row_data in enumerate(data):
+        set_row_flags(table.rows[start_row + ri])
         cells = table.rows[start_row + ri].cells
         bg    = alt_colors[ri % 2]
         if highlight_row is not None and ri == highlight_row:
@@ -305,8 +369,28 @@ def build_report():
     # ── Bước 1: Mở bìa làm tài liệu gốc ────────────────────────────────────
     # Quan trọng: dùng bìa làm BASE doc để giữ nguyên logo, font và tất cả
     # relationship (ảnh) có sẵn trong file bìa.
+    res = load_results()
+    cv, rank, sweep, test, var = res["cv"], res["rank"], res["sweep"], res["test"], res["variance"]
+
+    k_pca = int((var["Cumulative_Ratio"] >= 0.90).idxmax()) + 1
+    k_95  = int((var["Cumulative_Ratio"] >= 0.95).idxmax()) + 1
+    cum_k = var["Cumulative_Ratio"].iloc[k_pca - 1] * 100
+
+    def cvrow(model, use_pca):
+        sub = cv[(cv["Model"] == model) & (cv["PCA"].str.startswith("Yes" if use_pca else "No"))]
+        return sub.iloc[0]
+
+    best = rank.iloc[0]
+    best_name, best_pca = best["Model"], best["PCA"].startswith("Yes")
+    best_cv = cvrow(best_name, best_pca)
+    best_cfg = f"có PCA ({k_pca}D)" if best_pca else "không dùng PCA"
+    test_best  = test[test["Role"] == "Mô hình được chọn"].iloc[0]
+    test_alt   = test[test["Role"] == "Đối chứng PCA"].iloc[0]
+    test_dummy = test[test["Role"] == "Baseline"].iloc[0]
+
     print("[*] Mở bìa tiểu luận làm tài liệu gốc...")
     doc = Document(BIA_PATH)
+    fix_cover(doc)
 
     # ── Bước 2: Thêm section break (ngắt trang) sau bìa ─────────────────────
     # Section 0 (Trang bìa): Cần giữ nguyên:
@@ -381,7 +465,7 @@ def build_report():
         "có thể dẫn đến quá khớp, tăng chi phí tính toán. Bài tập này yêu cầu xây dựng "
         "một chương trình dự báo hoàn chỉnh theo hướng pipeline, trong đó tất cả các "
         "bước từ tiền xử lý đến mô hình hóa được đóng gói thống nhất. Mục tiêu cụ thể "
-        "gồm năm điểm:",
+        "gồm sáu điểm:",
         indent=True
     )
 
@@ -400,11 +484,16 @@ def build_report():
          "học kết hợp và máy vector hỗ trợ."),
         ("(4)",
          "Đánh giá toàn diện và khách quan dựa trên ba chỉ số MAE, RMSE, R² cùng với "
-         "độ ổn định qua kỹ thuật 5-Fold Cross-Validation."),
+         "độ ổn định qua kỹ thuật 5-Fold Cross-Validation trên tập huấn luyện, và lựa "
+         "chọn mô hình theo một quy tắc xếp hạng tường minh dựa trên các chỉ số này."),
         ("(5)",
-         "Phân tích định lượng tác động thực tế của PCA: so sánh hiệu năng khi giảm "
-         "chiều từ 8 xuống 5 và khảo sát sự biến thiên khi số thành phần PCA thay đổi "
-         "từ k = 1 đến k = 8."),
+         "Kiểm chứng mô hình được chọn trên một tập Test hold-out (20% dữ liệu) được "
+         "tách riêng ngay từ đầu và không tham gia vào bất kỳ bước phân tích, so sánh "
+         "hay lựa chọn nào."),
+        ("(6)",
+         f"Phân tích định lượng tác động thực tế của PCA: so sánh hiệu năng khi giảm "
+         f"chiều từ 8 xuống {k_pca} và khảo sát sự biến thiên khi số thành phần PCA "
+         f"thay đổi từ k = 1 đến k = 8."),
     ]
     for num, text in goals:
         add_bullet(doc, text, bold_prefix=num)
@@ -496,6 +585,15 @@ def build_report():
         "kiểm định, không có chiều ngược lại.",
         indent=True
     )
+    add_p(doc,
+        "Ngoài ra, ngay từ đầu dữ liệu được chia thành tập Train (80%, 16.512 mẫu) và "
+        "tập Test hold-out (20%, 4.128 mẫu) với random_state = 42. Toàn bộ các bước phân "
+        "tích PCA, so sánh mô hình bằng Cross-Validation, khảo sát số chiều và lựa chọn "
+        "mô hình chỉ sử dụng tập Train. Tập Test chỉ được dùng đúng một lần ở bước đánh "
+        "giá cuối cùng, nhờ đó kết quả trên tập Test là ước lượng khách quan về khả năng "
+        "tổng quát hóa của mô hình được chọn trên dữ liệu mới.",
+        indent=True
+    )
 
     add_callout(doc, [
         "Bước 1 — SimpleImputer(strategy='median'):  Điền giá trị khuyết thiếu "
@@ -532,25 +630,30 @@ def build_report():
     h2 = ["Thành phần chính", "Giá trị riêng", "Tỷ lệ phương sai (%)", "Phương sai tích lũy (%)"]
     w2 = [Inches(1.5), Inches(1.4), Inches(1.7), Inches(1.9)]
     make_header_row(t2, h2, w2, font_size=10)
-    d2 = [
-        ["PC1",    "2,027", "25,34 %", "25,34 %"],
-        ["PC2",    "1,882", "23,52 %", "48,85 %"],
-        ["PC3",    "1,271", "15,89 %", "64,74 %"],
-        ["PC4",    "1,031", "12,89 %", "77,63 %"],
-        ["PC5  ★", "1,003", "12,54 %", "90,17 %  ← Ngưỡng ≥ 90 %"],
-        ["PC6",    "0,659",  "8,24 %", "98,41 %  ← Ngưỡng ≥ 95 %"],
-        ["PC7",    "0,082",  "1,02 %", "99,43 %"],
-        ["PC8",    "0,045",  "0,57 %", "100,00 %"],
-    ]
-    fill_data_rows(t2, d2, w2, highlight_row=4, highlight_color="D6EAF8", font_size=10)
+    d2 = []
+    for i, r in var.iterrows():
+        label = r["PC"] + ("  ★" if i + 1 == k_pca else "")
+        cum = f"{vn(r['Cumulative_Ratio'] * 100, 2)} %"
+        if i + 1 == k_pca:
+            cum += "  ← Ngưỡng ≥ 90 %"
+        if i + 1 == k_95:
+            cum += "  ← Ngưỡng ≥ 95 %"
+        d2.append([label, vn(r["Eigenvalue"], 3),
+                   f"{vn(r['Variance_Ratio'] * 100, 2)} %", cum])
+    fill_data_rows(t2, d2, w2, highlight_row=k_pca - 1, highlight_color="D6EAF8", font_size=10)
     doc.add_paragraph().paragraph_format.space_after = Pt(4)
 
+    tail2 = var["Variance_Ratio"].iloc[-2:].sum() * 100
     add_p(doc,
-        "Kết quả phân tích cho thấy chỉ cần 5 thành phần chính đầu tiên đã bảo toàn "
-        "được 90,17% tổng lượng thông tin phương sai. Hai thành phần cuối cùng PC7 và "
-        "PC8 chỉ chiếm 1,59% phương sai, chủ yếu phản ánh sự dư thừa tuyến tính giữa "
-        "các cặp biến tương quan cao. Dựa vào kết quả này, k = 5 được chọn làm cấu hình "
-        "PCA chuẩn trong các thực nghiệm so sánh.",
+        f"PCA được khớp trên tập Train đã chuẩn hóa. Kết quả cho thấy chỉ cần {k_pca} "
+        f"thành phần chính đầu tiên đã bảo toàn được {vn(cum_k, 2)}% tổng phương sai của "
+        f"các đặc trưng đầu vào, và cần {k_95} thành phần để vượt ngưỡng 95%. Hai thành "
+        f"phần cuối cùng PC7 và PC8 chỉ chiếm {vn(tail2, 2)}% phương sai, chủ yếu phản ánh "
+        f"sự dư thừa tuyến tính giữa các cặp biến tương quan cao. Dựa vào kết quả này, "
+        f"k = {k_pca} (số thành phần nhỏ nhất đạt ngưỡng 90%) được chọn làm cấu hình PCA "
+        f"chuẩn trong các thực nghiệm so sánh. Lưu ý rằng phương sai ở đây là phương sai "
+        f"của đặc trưng đầu vào X, không phải lượng thông tin hữu ích để dự báo biến mục "
+        f"tiêu y — điểm này được phân tích ở Chương 6.",
         indent=True
     )
 
@@ -587,9 +690,11 @@ def build_report():
          "Cây quyết định phân cấp phi tuyến với chiều sâu tối đa là 10. Trực quan, dễ "
          "giải thích nhưng dễ bị quá khớp nếu không kiểm soát độ sâu."),
         ("7. Random Forest  (70 cây)",
-         "Mô hình học kết hợp theo kỹ thuật Bagging — huấn luyện 70 cây quyết định trên "
-         "các tập con dữ liệu và đặc trưng khác nhau, sau đó lấy trung bình kết quả để "
-         "giảm phương sai và chống quá khớp."),
+         "Mô hình học kết hợp theo kỹ thuật Bagging — huấn luyện 70 cây quyết định "
+         "(max_depth = 12) trên các mẫu bootstrap khác nhau của tập huấn luyện, sau đó lấy "
+         "trung bình kết quả để giảm phương sai và chống quá khớp. Với cấu hình mặc định "
+         "cho hồi quy của scikit-learn (max_features = 1,0), mỗi lần tách nút xét toàn bộ "
+         "đặc trưng."),
         ("8. HistGradientBoosting",
          "Thuật toán Gradient Boosting hiện đại tối ưu hóa theo histogram, thiết kế để "
          "xử lý dữ liệu lớn cực nhanh. Mỗi cây mới được huấn luyện để sửa phần dư lỗi "
@@ -602,14 +707,16 @@ def build_report():
     for bold, text in models_desc:
         add_bullet(doc, text, bold_prefix=bold)
 
-    add_heading(doc, "4.2. Phương pháp đánh giá: 5-Fold Cross-Validation", level=2)
+    add_heading(doc, "4.2. Phương pháp đánh giá: Hold-out Test + 5-Fold Cross-Validation", level=2)
     add_p(doc,
-        "Để đánh giá đồng thời độ chính xác và độ ổn định của mỗi mô hình, bài tập sử "
-        "dụng kỹ thuật 5-Fold Cross-Validation với xáo trộn ngẫu nhiên. Toàn bộ 20.640 "
-        "mẫu được chia thành 5 phần bằng nhau; tại mỗi vòng lặp, 4 phần khoảng 16.512 "
-        "mẫu được dùng để huấn luyện và 1 phần khoảng 4.128 mẫu dùng để kiểm định. "
-        "Quá trình lặp lại 5 lần độc lập với random_state cố định để đảm bảo tính "
-        "tái lập hoàn toàn.",
+        "Quy trình đánh giá gồm hai tầng. Tầng thứ nhất: 20.640 mẫu được chia ngẫu nhiên "
+        "thành tập Train 16.512 mẫu (80%) và tập Test hold-out 4.128 mẫu (20%). Tầng thứ "
+        "hai: trên tập Train, mỗi pipeline được đánh giá bằng 5-Fold Cross-Validation có "
+        "xáo trộn — tại mỗi vòng, khoảng 13.210 mẫu dùng để huấn luyện và khoảng 3.302 "
+        "mẫu dùng để kiểm định. Trung bình và độ lệch chuẩn qua 5 fold được dùng để so "
+        "sánh và lựa chọn mô hình. Sau khi chọn xong, mô hình được huấn luyện lại trên "
+        "toàn bộ tập Train và đánh giá một lần duy nhất trên tập Test. Mọi phép chia đều "
+        "dùng random_state = 42 để đảm bảo tính tái lập.",
         indent=True
     )
 
@@ -633,93 +740,155 @@ def build_report():
     for bold, text in metrics_desc:
         add_bullet(doc, text, bold_prefix=bold)
 
+    add_heading(doc, "4.4. Quy tắc lựa chọn mô hình", level=2)
+    add_p(doc,
+        "Để việc chọn mô hình khách quan và tái lập được, chương trình xếp hạng tự động "
+        "tất cả các cấu hình (8 mô hình × có/không PCA, không tính Dummy Baseline) theo "
+        "bốn tiêu chí trên kết quả 5-Fold CV: MAE trung bình (thấp tốt), RMSE trung bình "
+        "(thấp tốt), R² trung bình (cao tốt) và độ lệch chuẩn của R² qua các fold (thấp = "
+        "ổn định hơn). Mô hình được chọn là cấu hình có hạng trung bình của bốn tiêu chí "
+        "nhỏ nhất; nếu bằng nhau thì ưu tiên RMSE thấp hơn.",
+        indent=True
+    )
+
     add_separator(doc)
 
     # ── Bước 8: CHƯƠNG 5 — Kết quả ──────────────────────────────────────────
     add_heading(doc, "5. KẾT QUẢ THỰC NGHIỆM CHI TIẾT", level=1)
 
-    add_heading(doc, "5.1. Bảng tổng hợp số liệu (5-Fold CV: Mean ± Std)", level=2)
-    add_p(doc, "Bảng 3: Kết quả đánh giá tất cả các mô hình qua 5-Fold Cross-Validation",
+    add_heading(doc, "5.1. Bảng tổng hợp số liệu (5-Fold CV trên tập Train: Mean ± Std)", level=2)
+    add_p(doc, "Bảng 3: Kết quả đánh giá tất cả các mô hình qua 5-Fold Cross-Validation trên tập Train",
           italic=True, space_after=3)
-    t3 = doc.add_table(rows=19, cols=6)
+    t3 = doc.add_table(rows=len(cv) + 1, cols=6)
     t3.alignment = WD_TABLE_ALIGNMENT.CENTER
     h3 = ["Mô hình", "Cấu hình PCA", "MAE (Mean ± Std)", "RMSE (Mean ± Std)", "R² (Mean ± Std)", "T.gian (s)"]
     w3 = [Inches(1.75), Inches(1.15), Inches(1.35), Inches(1.35), Inches(1.35), Inches(0.8)]
     make_header_row(t3, h3, w3, font_size=9.5)
-    d3 = [
-        ["Dummy Baseline",       "Không PCA (8D)", "0,9118 ± 0,0067", "1,1539 ± 0,0103", "−0,0003 ± 0,0003", "0,01"],
-        ["Dummy Baseline",       "Có PCA (5D)",    "0,9118 ± 0,0067", "1,1539 ± 0,0103", "−0,0003 ± 0,0003", "0,01"],
-        ["Linear Regression",    "Không PCA (8D)", "0,5317 ± 0,0084", "0,7283 ± 0,0149", "0,6014 ± 0,0170",  "0,01"],
-        ["Linear Regression",    "Có PCA (5D)",    "0,6458 ± 0,0057", "0,8533 ± 0,0126", "0,4529 ± 0,0161",  "0,01"],
-        ["Ridge Regression",     "Không PCA (8D)", "0,5317 ± 0,0084", "0,7282 ± 0,0149", "0,6014 ± 0,0170",  "0,01"],
-        ["Ridge Regression",     "Có PCA (5D)",    "0,6458 ± 0,0057", "0,8533 ± 0,0126", "0,4529 ± 0,0161",  "0,01"],
-        ["Lasso Regression",     "Không PCA (8D)", "0,5354 ± 0,0079", "0,7302 ± 0,0124", "0,5993 ± 0,0140",  "0,04"],
-        ["Lasso Regression",     "Có PCA (5D)",    "0,6468 ± 0,0056", "0,8529 ± 0,0131", "0,4533 ± 0,0167",  "0,01"],
-        ["K-Nearest Neighbors",  "Không PCA (8D)", "0,4308 ± 0,0172", "0,6328 ± 0,0236", "0,6987 ± 0,0221",  "0,04"],
-        ["K-Nearest Neighbors",  "Có PCA (5D)",    "0,5220 ± 0,0085", "0,7424 ± 0,0107", "0,5857 ± 0,0138",  "0,03"],
-        ["Decision Tree",        "Không PCA (8D)", "0,4248 ± 0,0085", "0,6406 ± 0,0118", "0,6917 ± 0,0108",  "0,08"],
-        ["Decision Tree",        "Có PCA (5D)",    "0,5760 ± 0,0138", "0,8231 ± 0,0174", "0,4908 ± 0,0209",  "0,06"],
-        ["SVR (nhân RBF)",       "Không PCA (8D)", "0,3906 ± 0,0110", "0,5861 ± 0,0185", "0,7417 ± 0,0160",  "7,71"],
-        ["SVR (nhân RBF)",       "Có PCA (5D)",    "0,5210 ± 0,0083", "0,7587 ± 0,0146", "0,5674 ± 0,0182",  "7,76"],
-        ["Random Forest",        "Không PCA (8D)", "0,3455 ± 0,0070", "0,5193 ± 0,0099", "0,7973 ± 0,0081",  "1,95"],
-        ["Random Forest",        "Có PCA (5D)",    "0,5205 ± 0,0094", "0,7341 ± 0,0128", "0,5949 ± 0,0172",  "1,46"],
-        ["HistGradientBoosting", "Không PCA (8D)", "0,3118 ± 0,0058", "0,4665 ± 0,0103", "0,8364 ± 0,0079",  "0,30"],
-        ["HistGradientBoosting", "Có PCA (5D)",    "0,5196 ± 0,0078", "0,7264 ± 0,0112", "0,6034 ± 0,0149",  "0,26"],
-    ]
+    d3, best_idx = [], None
+    for i, r in cv.reset_index(drop=True).iterrows():
+        use_pca = r["PCA"].startswith("Yes")
+        if r["Model"] == best_name and use_pca == best_pca:
+            best_idx = i
+        d3.append([
+            DISPLAY_NAMES.get(r["Model"], r["Model"]),
+            f"Có PCA ({k_pca}D)" if use_pca else "Không PCA (8D)",
+            pm(r["MAE_Mean"], r["MAE_Std"]),
+            pm(r["RMSE_Mean"], r["RMSE_Std"]),
+            pm(r["R2_Mean"], r["R2_Std"]),
+            vn(r["Fit_Time_Sec"], 2),
+        ])
     col_a3 = [WD_ALIGN_PARAGRAPH.LEFT, WD_ALIGN_PARAGRAPH.CENTER,
                WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.CENTER,
                WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.CENTER]
-    fill_data_rows(t3, d3, w3, highlight_row=16, highlight_color="D5F5E3",
+    fill_data_rows(t3, d3, w3, highlight_row=best_idx, highlight_color="D5F5E3",
                    col_aligns=col_a3, font_size=9)
     doc.add_paragraph().paragraph_format.space_after = Pt(4)
 
-    add_heading(doc, "5.2. Biểu đồ so sánh trực quan các mô hình", level=2)
+    add_heading(doc, "5.2. Xếp hạng và lựa chọn mô hình", level=2)
+    add_p(doc, "Bảng 4: Xếp hạng các cấu hình theo quy tắc ở mục 4.4 (6 cấu hình đứng đầu)",
+          italic=True, space_after=3)
+    top = rank.head(6)
+    t4 = doc.add_table(rows=len(top) + 1, cols=7)
+    t4.alignment = WD_TABLE_ALIGNMENT.CENTER
+    h4 = ["Mô hình", "Cấu hình PCA", "Hạng MAE", "Hạng RMSE", "Hạng R²", "Hạng ổn định", "Hạng TB"]
+    w4 = [Inches(1.75), Inches(1.15), Inches(0.75), Inches(0.8), Inches(0.75), Inches(0.9), Inches(0.75)]
+    make_header_row(t4, h4, w4, font_size=9.5)
+    d4 = [[DISPLAY_NAMES.get(r["Model"], r["Model"]),
+           f"Có PCA ({k_pca}D)" if r["PCA"].startswith("Yes") else "Không PCA (8D)",
+           f"{r['Rank_MAE']:.0f}", f"{r['Rank_RMSE']:.0f}", f"{r['Rank_R2']:.0f}",
+           f"{r['Rank_Stability']:.0f}", vn(r["Avg_Rank"], 2)] for _, r in top.iterrows()]
+    col_a4 = [WD_ALIGN_PARAGRAPH.LEFT] + [WD_ALIGN_PARAGRAPH.CENTER] * 6
+    fill_data_rows(t4, d4, w4, highlight_row=0, highlight_color="D5F5E3",
+                   col_aligns=col_a4, font_size=9)
+    doc.add_paragraph().paragraph_format.space_after = Pt(4)
+
+    rf = cvrow("Random Forest", False)
+    svr = cvrow("Support Vector Regressor", False)
+    knn = cvrow("K-Nearest Neighbors", False)
+    dt = cvrow("Decision Tree", False)
+    lin = [cvrow(m, False)["R2_Mean"] for m in ["Linear Regression", "Ridge Regression", "Lasso Regression"]]
+    dummy = cvrow("Dummy Baseline", False)
+    mae_pct = best_cv["MAE_Mean"] / TARGET_MEAN * 100
+    n_full_rank1 = int((best[["Rank_MAE", "Rank_RMSE", "Rank_R2", "Rank_Stability"]] == 1).sum())
+
+    add_p(doc,
+        f"Theo quy tắc xếp hạng, {best_name} {best_cfg} được chọn với hạng trung bình "
+        f"{vn(best['Avg_Rank'], 2)} — đứng đầu ở {n_full_rank1}/4 tiêu chí. Mô hình đạt "
+        f"R² = {vn(best_cv['R2_Mean'])}, RMSE = {vn(best_cv['RMSE_Mean'])} và MAE = "
+        f"{vn(best_cv['MAE_Mean'])}, với độ lệch chuẩn R² qua 5 fold chỉ "
+        f"{vn(best_cv['R2_Std'])}. Quy đổi ra thực tế, sai số tuyệt đối trung bình khoảng "
+        f"{usd(best_cv['MAE_Mean'])} so với giá trị nhà trung bình khoảng {usd(TARGET_MEAN)}, "
+        f"tức khoảng {vn(mae_pct, 1)}%. Thời gian huấn luyện trung bình "
+        f"{vn(best_cv['Fit_Time_Sec'], 2)} giây/fold, nhanh hơn Random Forest khoảng "
+        f"{vn(rf['Fit_Time_Sec'] / best_cv['Fit_Time_Sec'], 1)} lần và SVR khoảng "
+        f"{vn(svr['Fit_Time_Sec'] / best_cv['Fit_Time_Sec'], 0)} lần.",
+        indent=True
+    )
+    add_p(doc,
+        f"Các mô hình còn lại (không PCA) phân thành các nhóm hiệu năng rõ rệt. Random "
+        f"Forest đứng thứ hai với R² = {vn(rf['R2_Mean'])}. SVR nhân RBF đạt R² = "
+        f"{vn(svr['R2_Mean'])}, học tốt quan hệ phi tuyến nhưng chi phí tính toán cao nhất "
+        f"({vn(svr['Fit_Time_Sec'], 2)} giây/fold). KNN và Decision Tree đạt R² lần lượt "
+        f"{vn(knn['R2_Mean'])} và {vn(dt['R2_Mean'])}. Ba mô hình tuyến tính Linear "
+        f"Regression, Ridge và Lasso gần như tương đương nhau với R² từ {vn(min(lin))} đến "
+        f"{vn(max(lin))}, cho thấy quan hệ phi tuyến trong dữ liệu là đáng kể. Dummy "
+        f"Baseline cho R² = {vn(dummy['R2_Mean'])} ≈ 0 — tất cả 8 mô hình học máy đều vượt "
+        f"trội rõ rệt so với mốc cơ sở.",
+        indent=True
+    )
+
+    add_heading(doc, "5.3. Biểu đồ so sánh trực quan các mô hình", level=2)
     add_figure(doc, "results/model_comparison.png",
                "Hình 3: So sánh 9 mô hình hồi quy không dùng PCA qua ba chỉ số R², RMSE "
-               "và MAE, kèm thanh sai số chuẩn của 5-Fold CV",
+               "và MAE, kèm thanh sai số chuẩn của 5-Fold CV trên tập Train",
                width=6.3)
 
+    add_heading(doc, "5.4. Đánh giá cuối cùng trên tập Test hold-out", level=2)
     add_p(doc,
-        "Nhìn vào kết quả thực nghiệm, các mô hình tự nhiên phân thành bốn nhóm hiệu "
-        "năng rõ rệt.",
+        "Sau khi lựa chọn, mô hình được huấn luyện lại trên toàn bộ 16.512 mẫu của tập "
+        "Train và đánh giá một lần duy nhất trên 4.128 mẫu của tập Test. Bảng 5 so sánh "
+        "mô hình được chọn với Dummy Baseline và với chính nó ở cấu hình PCA còn lại.",
         indent=True
     )
+    add_p(doc, "Bảng 5: Kết quả trên tập Test hold-out (20%)", italic=True, space_after=3)
+    t5 = doc.add_table(rows=len(test) + 1, cols=6)
+    t5.alignment = WD_TABLE_ALIGNMENT.CENTER
+    h5 = ["Vai trò", "Mô hình", "Cấu hình PCA", "MAE", "RMSE", "R²"]
+    w5 = [Inches(1.4), Inches(1.75), Inches(1.15), Inches(0.9), Inches(0.9), Inches(0.9)]
+    make_header_row(t5, h5, w5, font_size=9.5)
+    d5 = [[r["Role"], DISPLAY_NAMES.get(r["Model"], r["Model"]),
+           f"Có PCA ({k_pca}D)" if r["PCA"].startswith("Yes") else "Không PCA (8D)",
+           vn(r["MAE"]), vn(r["RMSE"]), vn(r["R2"])] for _, r in test.iterrows()]
+    best_test_idx = int(test.index[test["Role"] == "Mô hình được chọn"][0])
+    col_a5 = [WD_ALIGN_PARAGRAPH.LEFT, WD_ALIGN_PARAGRAPH.LEFT] + [WD_ALIGN_PARAGRAPH.CENTER] * 4
+    fill_data_rows(t5, d5, w5, highlight_row=best_test_idx, highlight_color="D5F5E3",
+                   col_aligns=col_a5, font_size=9.5)
+    doc.add_paragraph().paragraph_format.space_after = Pt(4)
+
+    gap_r2 = test_best["R2"] - best_cv["R2_Mean"]
     add_p(doc,
-        "Nhóm dẫn đầu gồm hai mô hình học kết hợp. HistGradientBoosting đạt kết quả tốt "
-        "nhất tuyệt đối với R² = 0,8364, RMSE = 0,4665 và MAE = 0,3118. Quy đổi ra thực "
-        "tế, sai số trung bình chỉ khoảng 31.180 USD trên một ngôi nhà trị giá trung bình "
-        "206.800 USD, tức chưa đến 15%. Đặc biệt, thời gian huấn luyện chỉ 0,30 giây và "
-        "độ lệch chuẩn qua 5 folds dưới 0,008 — mô hình vừa chính xác vừa ổn định. "
-        "Random Forest đứng thứ hai với R² = 0,7973 nhưng thời gian huấn luyện lâu hơn "
-        "gần 7 lần.",
-        indent=True
-    )
-    add_p(doc,
-        "Nhóm thứ hai là SVR nhân RBF với R² = 0,7417, thể hiện khả năng học quan hệ phi "
-        "tuyến tốt, nhưng chi phí tính toán rất cao ở mức 7,71 giây mỗi fold — không thực "
-        "tế khi dữ liệu lớn hơn. Nhóm thứ ba gồm KNN và Decision Tree đạt R² xấp xỉ 0,69 "
-        "đến 0,70. KNN có biến thiên giữa các fold cao hơn, phản ánh tính nhạy cảm với sự "
-        "phân phối cụ thể của dữ liệu. Cuối cùng, ba mô hình tuyến tính Linear Regression, "
-        "Ridge và Lasso có hiệu năng gần như tương đương nhau với R² khoảng 0,60, cho thấy "
-        "quan hệ phi tuyến trong dữ liệu là đáng kể và không thể bắt bằng mô hình tuyến tính "
-        "thuần túy. Dummy Baseline cho R² xấp xỉ 0 — tất cả 8 mô hình học máy đều vượt "
-        "trội áp đảo.",
+        f"Trên tập Test, {best_name} {best_cfg} đạt R² = {vn(test_best['R2'])}, RMSE = "
+        f"{vn(test_best['RMSE'])} và MAE = {vn(test_best['MAE'])}. Chênh lệch R² giữa tập "
+        f"Test và trung bình CV là {vn(gap_r2)} (độ lệch chuẩn CV là "
+        f"{vn(best_cv['R2_Std'])}), cho thấy ước lượng từ Cross-Validation đáng tin cậy và "
+        f"mô hình không bị quá khớp vào quá trình lựa chọn. Dummy Baseline trên tập Test "
+        f"chỉ đạt R² = {vn(test_dummy['R2'])}. Cấu hình đối chứng "
+        f"({'không PCA' if best_pca else f'có PCA {k_pca}D'}) đạt R² = {vn(test_alt['R2'])}, "
+        f"xác nhận kết luận về tác động của PCA ở Chương 6 cũng đúng trên dữ liệu mới.",
         indent=True
     )
 
-    add_heading(doc, "5.3. Biểu đồ phân tán Thực tế vs Dự báo", level=2)
     add_figure(doc, "results/actual_vs_predicted.png",
-               "Hình 4: Biểu đồ phân tán so sánh giá trị thực tế với giá trị dự báo — "
-               "Dummy Baseline (trái) và HistGradientBoosting (phải)",
+               f"Hình 4: Giá trị thực tế và giá trị dự báo trên tập Test — Dummy Baseline "
+               f"(trái) và {best_name} {best_cfg} (phải)",
                width=6.2)
     add_p(doc,
-        "Biểu đồ phân tán làm rõ sự khác biệt định tính giữa hai cực hiệu năng. Với "
-        "Dummy Baseline, toàn bộ điểm dự báo nằm trên một đường ngang duy nhất tương "
-        "ứng với giá trị trung bình — mô hình không học được bất kỳ cấu trúc nào. Ngược "
-        "lại, HistGradientBoosting cho thấy các điểm hội tụ chặt chẽ xung quanh đường "
-        "chéo lý tưởng, thể hiện khả năng dự báo chính xác xuyên suốt toàn bộ phổ giá "
-        "từ thấp đến cao. Chỉ ở mức giá trần 500.001 USD có sự bão hòa nhẹ do hiệu ứng "
-        "cắt ngưỡng của dữ liệu gốc.",
+        f"Biểu đồ phân tán làm rõ sự khác biệt định tính giữa hai cực hiệu năng. Với "
+        f"Dummy Baseline, toàn bộ điểm dự báo nằm trên một đường ngang tương ứng với giá "
+        f"trị trung bình của tập Train — mô hình không học được cấu trúc nào. Ngược lại, "
+        f"các dự báo của {best_name} tập trung quanh đường chéo lý tưởng trên toàn bộ dải "
+        f"giá. Ở mức trần 500.001 USD, nhiều mẫu thực tế bằng trần nhưng được dự báo "
+        f"thấp hơn, do hiệu ứng cắt ngưỡng của dữ liệu gốc.",
         indent=True
     )
 
@@ -728,62 +897,122 @@ def build_report():
     # ── Bước 9: CHƯƠNG 6 — Phân tích PCA ────────────────────────────────────
     add_heading(doc, "6. PHÂN TÍCH CHUYÊN SÂU TÁC ĐỘNG CỦA PCA", level=1)
 
-    add_heading(doc, "6.1. So sánh trực tiếp: Có PCA (5D) vs Không PCA (8D)", level=2)
+    add_heading(doc, f"6.1. So sánh trực tiếp: Có PCA ({k_pca}D) vs Không PCA (8D)", level=2)
     add_figure(doc, "results/pca_impact.png",
-               "Hình 5: So sánh R² và RMSE của từng mô hình giữa hai cấu hình "
-               "không dùng PCA (8 chiều) và có dùng PCA (5 chiều)",
+               f"Hình 5: So sánh R² và RMSE của từng mô hình giữa hai cấu hình "
+               f"không dùng PCA (8 chiều) và có dùng PCA ({k_pca} chiều)",
                width=6.2)
+
+    impact = []
+    for m in cv["Model"].unique():
+        if m == "Dummy Baseline":
+            continue
+        a, b = cvrow(m, False), cvrow(m, True)
+        impact.append({
+            "Model": m,
+            "r2_no": a["R2_Mean"], "r2_yes": b["R2_Mean"],
+            "r2_drop": (a["R2_Mean"] - b["R2_Mean"]) / a["R2_Mean"] * 100,
+            "rmse_up": (b["RMSE_Mean"] - a["RMSE_Mean"]) / a["RMSE_Mean"] * 100,
+        })
+    impact = pd.DataFrame(impact).set_index("Model")
+    all_worse = bool((impact["r2_drop"] > 0).all())
+
+    def drop_txt(m):
+        r = impact.loc[m]
+        return (f"{DISPLAY_NAMES.get(m, m)} từ {vn(r['r2_no'])} xuống {vn(r['r2_yes'])} "
+                f"(giảm {vn(r['r2_drop'], 1)}%)")
+
     add_p(doc,
-        "Kết quả cho thấy một xu hướng nhất quán và rõ ràng: khi áp dụng PCA để giảm "
-        "từ 8 chiều xuống 5 chiều, dù vẫn giữ lại 90,17% phương sai, hiệu năng của tất "
-        "cả các mô hình đều suy giảm đáng kể. Cụ thể, R² của HistGradientBoosting giảm "
-        "từ 0,8364 xuống 0,6034, tức giảm 27,9%; Random Forest từ 0,7973 xuống 0,5949, "
-        "giảm 25,3%; Decision Tree từ 0,6917 xuống 0,4908, giảm 29,0%; và Linear "
-        "Regression từ 0,6014 xuống 0,4529, giảm 24,6%. RMSE của tất cả các mô hình "
-        "tăng từ 15% đến 30% so với cấu hình không dùng PCA.",
+        f"Khi giảm từ 8 chiều xuống {k_pca} chiều — dù vẫn giữ lại {vn(cum_k, 2)}% phương "
+        f"sai đầu vào — hiệu năng của "
+        f"{'tất cả các mô hình đều' if all_worse else 'phần lớn các mô hình'} suy giảm rõ "
+        f"rệt. R² giảm tương đối từ {vn(impact['r2_drop'].min(), 1)}% "
+        f"({DISPLAY_NAMES.get(impact['r2_drop'].idxmin(), impact['r2_drop'].idxmin())}) đến "
+        f"{vn(impact['r2_drop'].max(), 1)}% "
+        f"({DISPLAY_NAMES.get(impact['r2_drop'].idxmax(), impact['r2_drop'].idxmax())}). "
+        f"Cụ thể: R² của {drop_txt('HistGradientBoosting')}; {drop_txt('Random Forest')}; "
+        f"{drop_txt('Decision Tree')}; {drop_txt('Linear Regression')}. Tương ứng, RMSE "
+        f"tăng từ {vn(impact['rmse_up'].min(), 1)}% đến {vn(impact['rmse_up'].max(), 1)}% "
+        f"so với cấu hình không dùng PCA; mức tăng lớn nhất rơi vào "
+        f"{' và '.join(DISPLAY_NAMES.get(m, m) for m in impact['rmse_up'].nlargest(2).index)} "
+        f"— chính là những mô hình mạnh nhất khi không dùng PCA.",
         indent=True
     )
 
     add_heading(doc, "6.2. Khảo sát hiệu năng theo số chiều PCA từ k = 1 đến k = 8", level=2)
     add_figure(doc, "results/pca_components_sweep.png",
-               "Hình 6: Sự biến thiên của R² và RMSE khi số thành phần PCA k tăng "
-               "từ 1 đến 8 trên ba mô hình tiêu biểu",
+               "Hình 6: Sự biến thiên của R² và RMSE (5-Fold CV trên tập Train) khi số thành "
+               "phần PCA k tăng từ 1 đến 8 trên ba mô hình tiêu biểu",
                width=6.2)
+
+    def sw(m, k, col="R2_Mean"):
+        return sweep[(sweep["Model"] == m) & (sweep["k_components"] == k)][col].iloc[0]
+
+    lr_k = {k: sw("Linear Regression", k) for k in range(1, 9)}
+    tree_models = ["Random Forest", "HistGradientBoosting"]
+    lr_unstable = sweep[(sweep["Model"] == "Linear Regression")].set_index("k_components")["R2_Std"]
+    k_unstable = int(lr_unstable.idxmax())
+
+    tree_k1 = min(sw(m, 1) for m in tree_models)
+    tree_k3 = max(sw(m, 3) for m in tree_models)
+    tree_k4 = sorted(sw(m, 4) for m in tree_models)
+    lr_std_other = lr_unstable.drop(k_unstable).max()
     add_p(doc,
-        "Biểu đồ khảo sát số chiều cho thấy bức tranh chi tiết hơn. Với chỉ 1 hoặc 2 "
-        "thành phần chính, hiệu năng rất thấp, R² dưới 0,20, do không đủ thông tin để "
-        "tách biệt cấu trúc giá nhà. Từ k = 3 đến k = 4, R² tăng vọt lên khoảng 0,40 "
-        "đến 0,48 khi thêm được thông tin về thu nhập và không gian địa lý. Giai đoạn "
-        "từ k = 5 đến k = 7 tiếp tục cải thiện đều đặn nhưng vẫn chưa đạt mức tối đa. "
-        "Bước nhảy vọt quyết định xảy ra ở k = 8: khi phục hồi đầy đủ toàn bộ 8 chiều "
-        "qua phép quay trực giao PCA, tất cả mô hình đạt lại đúng kết quả ban đầu, "
-        "xác nhận rằng không có thông tin nào bị mất trong phép biến đổi này.",
+        f"Khảo sát dùng đúng siêu tham số như thực nghiệm chính. Với k = 1 đến 3, hai mô "
+        f"hình cây chỉ đạt R² từ khoảng {vn(tree_k1, 2)} đến {vn(tree_k3, 2)}, còn Linear "
+        f"Regression gần như không học được gì (R² ≤ {vn(max(lr_k[1], lr_k[2], lr_k[3]), 2)}) "
+        f"— các thành phần chính đầu tiên chứa nhiều phương sai của X nhưng ít liên quan "
+        f"tuyến tính tới giá nhà. Tại k = 4, cả ba mô hình đều tăng vọt: Random Forest và "
+        f"HistGradientBoosting lên khoảng {vn(tree_k4[0], 2)}–{vn(tree_k4[1], 2)}, Linear "
+        f"Regression lên {vn(lr_k[4], 2)}. Riêng Linear Regression tại k = {k_unstable} có độ "
+        f"lệch chuẩn R² qua các fold bằng {vn(lr_unstable.max(), 2)}, lớn hơn hẳn các giá "
+        f"trị k khác (≤ {vn(lr_std_other, 2)}). Kiểm tra riêng cho thấy nguyên nhân là một "
+        f"mẫu ngoại lai cực đoan (AveOccup ≈ 1.243 người/hộ) bị chiếu thành giá trị rất lớn "
+        f"trên thành phần chính, khiến dự báo tuyến tính cho mẫu này sai lệch hơn 30 đơn vị "
+        f"và kéo R² của fold đó xuống thấp. Từ k = 5 đến k = 8, cả ba mô hình cải thiện "
+        f"dần đều.",
+        indent=True
+    )
+    add_p(doc,
+        f"Điểm đáng chú ý nhất là tại k = 8 (giữ lại toàn bộ 8 thành phần, PCA chỉ còn là "
+        f"một phép quay trực giao, không mất thông tin): Linear Regression đạt R² = "
+        f"{vn(lr_k[8])}, trùng với kết quả không dùng PCA ({vn(cvrow('Linear Regression', False)['R2_Mean'])}) "
+        f"vì mô hình tuyến tính bất biến với phép quay. Ngược lại, Random Forest chỉ đạt "
+        f"{vn(sw('Random Forest', 8))} (so với {vn(cvrow('Random Forest', False)['R2_Mean'])} "
+        f"khi không PCA) và HistGradientBoosting đạt {vn(sw('HistGradientBoosting', 8))} (so "
+        f"với {vn(cvrow('HistGradientBoosting', False)['R2_Mean'])}). Như vậy, với mô hình "
+        f"cây, PCA gây hại ngay cả khi không bỏ bớt chiều nào — nguyên nhân không chỉ là "
+        f"mất thông tin mà còn là phép quay phá vỡ cấu trúc đặc trưng gốc.",
         indent=True
     )
 
     add_heading(doc, "6.3. Giải thích nguyên nhân PCA làm giảm hiệu năng", level=2)
     add_p(doc,
-        "Câu hỏi đặt ra là tại sao PCA giữ lại tới 90,17% phương sai đầu vào nhưng R² "
-        "vẫn sụt giảm từ 24% đến 29%? Có ba nguyên nhân học thuật căn bản:",
+        f"Câu hỏi đặt ra là tại sao PCA giữ lại tới {vn(cum_k, 2)}% phương sai đầu vào "
+        f"nhưng R² vẫn sụt giảm từ {vn(impact['r2_drop'].min(), 1)}% đến "
+        f"{vn(impact['r2_drop'].max(), 1)}%? Có ba nguyên nhân chính:",
         indent=True
     )
     add_callout(doc, [
         "Nguyên nhân 1 — PCA là giải thuật học không giám sát:\n"
-        "PCA tối đa hóa phương sai trên đặc trưng đầu vào mà hoàn toàn không biết thông "
-        "tin về biến mục tiêu. Vì vậy, các thành phần PC6, PC7, PC8 — dù chỉ chiếm ~10% "
-        "phương sai của đặc trưng — lại có thể mang tương quan rất cao với giá nhà. Khi "
-        "bị loại bỏ, chúng mang đi thông tin dự báo quý giá mà mô hình không thể bù đắp.",
-        "\nNguyên nhân 2 — Phá vỡ tương tác phi tuyến địa lý:\n"
-        "Latitude và Longitude có quan hệ phi tuyến mạnh với giá nhà, vì các khu ven biển "
-        "và thung lũng Silicon có giá rất cao so với nội địa. Phép chiếu tuyến tính của PCA "
-        "kết hợp tọa độ với các biến kinh tế, phá vỡ cấu trúc phân cụm địa lý mà các mô "
-        "hình cây dựa vào để nhận diện vùng giá cao.",
+        "PCA chọn các hướng có phương sai lớn nhất của X mà hoàn toàn không biết biến "
+        f"mục tiêu y. Các thành phần bị loại bỏ (PC{k_pca + 1}–PC8), dù chỉ chiếm khoảng "
+        f"{vn((1 - var['Cumulative_Ratio'].iloc[k_pca - 1]) * 100, 1)}% phương sai của X, vẫn "
+        "có thể mang thông tin quan trọng để dự báo giá nhà. Hình 6 cho thấy R² tiếp tục "
+        "tăng rõ rệt từ k = 5 đến k = 8, tức các thành phần cuối không phải là nhiễu.",
+        "\nNguyên nhân 2 — Phép quay phá vỡ cấu trúc mà mô hình cây khai thác:\n"
+        "Cây quyết định tách dữ liệu theo từng đặc trưng gốc (ngưỡng song song trục). Các "
+        "biến như MedInc hay cặp Latitude/Longitude có quan hệ phi tuyến mạnh với giá nhà "
+        "(các vùng ven biển có giá cao). Mỗi thành phần chính là tổ hợp tuyến tính trộn lẫn "
+        "các biến kinh tế và tọa độ, nên cây cần nhiều lần tách hơn để mô tả cùng một ranh "
+        "giới. Bằng chứng trực tiếp là kết quả tại k = 8 ở mục 6.2: không mất thông tin nào "
+        "nhưng R² của Random Forest và HistGradientBoosting vẫn giảm.",
         "\nNguyên nhân 3 — Số chiều ban đầu đã nhỏ:\n"
-        "PCA phát huy hiệu quả nhất khi số chiều rất lớn như ảnh, văn bản hay dữ liệu gen "
-        "để chống quá khớp. Với bộ dữ liệu chỉ có 8 chiều, không tồn tại vấn đề bùng nổ "
-        "số chiều, nên việc giảm chiều không mang lại lợi ích chống quá khớp mà chỉ làm "
-        "mất thông tin.",
-    ], title="Ba nguyên nhân học thuật vì sao PCA làm giảm hiệu năng:")
+        "PCA phát huy hiệu quả nhất khi số chiều rất lớn như ảnh, văn bản hay dữ liệu gen, "
+        "nơi giảm chiều giúp chống quá khớp và giảm chi phí. Với chỉ 8 đặc trưng và hơn "
+        "16.000 mẫu huấn luyện, không tồn tại vấn đề bùng nổ số chiều, nên việc giảm chiều "
+        "không mang lại lợi ích mà chỉ làm mất thông tin.",
+    ], title="Ba nguyên nhân vì sao PCA làm giảm hiệu năng:")
 
     add_separator(doc)
 
@@ -794,39 +1023,43 @@ def build_report():
           indent=True)
 
     add_p(doc,
-        "Về lựa chọn mô hình, HistGradientBoostingRegressor không dùng PCA là mô hình "
-        "vượt trội nhất trên bộ dữ liệu California Housing theo mọi tiêu chí đánh giá. "
-        "Với R² = 0,8364, RMSE = 0,4665 và MAE = 0,3118, mô hình giải thích được gần "
-        "84% phương sai giá nhà với sai số trung bình chỉ khoảng 31.000 USD. Độ lệch "
-        "chuẩn qua 5 folds dưới 0,008 khẳng định tính ổn định cao. Thời gian huấn luyện "
-        "chỉ 0,30 giây — nhanh hơn Random Forest gần 7 lần và nhanh hơn SVR 25 lần — "
-        "làm cho mô hình này hoàn toàn phù hợp để triển khai trong hệ thống thời gian thực.",
+        f"Về lựa chọn mô hình, theo quy tắc xếp hạng dựa trên MAE, RMSE, R² và độ ổn định "
+        f"qua 5-Fold CV, {best_name} {best_cfg} là mô hình tốt nhất trên bộ dữ liệu "
+        f"California Housing. Trên CV, mô hình đạt R² = {vn(best_cv['R2_Mean'])} ± "
+        f"{vn(best_cv['R2_Std'])}, RMSE = {vn(best_cv['RMSE_Mean'])}, MAE = "
+        f"{vn(best_cv['MAE_Mean'])}; trên tập Test hold-out đạt R² = {vn(test_best['R2'])}, "
+        f"RMSE = {vn(test_best['RMSE'])}, MAE = {vn(test_best['MAE'])} (sai số tuyệt đối "
+        f"trung bình khoảng {usd(test_best['MAE'])}). Kết quả trên tập Test khớp với CV, "
+        f"khẳng định mô hình ổn định và tổng quát hóa tốt; thời gian huấn luyện ngắn "
+        f"({vn(best_cv['Fit_Time_Sec'], 2)} giây/fold) cũng thuận lợi cho triển khai.",
         bold_part="Kết luận 1.", indent=True
     )
     add_p(doc,
         "Về Pipeline tiền xử lý, việc kết hợp SimpleImputer và StandardScaler trong "
-        "Pipeline là thiết kế chuẩn mực giúp mô hình kháng lỗi khi dữ liệu có giá trị "
-        "khuyết thiếu, đồng thời đảm bảo tính đúng đắn toán học cho các thuật toán nhạy "
-        "cảm với thang đo như KNN, SVR, Ridge và Lasso. Đây là thực hành bắt buộc trong "
-        "môi trường sản xuất thực tế.",
+        "Pipeline, cùng với việc tách tập Test ngay từ đầu, đảm bảo không rò rỉ dữ liệu "
+        "trong toàn bộ quá trình đánh giá. Chuẩn hóa là bắt buộc với các thuật toán nhạy "
+        "cảm với thang đo như KNN, SVR, Ridge, Lasso và với PCA; bước Imputation giúp "
+        "pipeline vẫn hoạt động khi dữ liệu mới có giá trị khuyết thiếu.",
         bold_part="Kết luận 2.", indent=True
     )
     add_p(doc,
-        "Về bài học thực tiễn từ PCA, thực nghiệm minh chứng rõ ràng rằng giảm chiều "
-        "không giám sát bằng PCA không đồng nghĩa với việc cải thiện bài toán hồi quy có "
-        "giám sát. Trên dữ liệu California Housing — vốn có số chiều nhỏ và các biến địa "
-        "lý phi tuyến quan trọng — PCA thực sự làm tổn hại hiệu năng. Tuy nhiên, PCA vẫn "
-        "có giá trị phân tích cấu trúc dữ liệu và trực quan hóa trong không gian 2D/3D. "
-        "Trong thực tế, quyết định có nên dùng PCA hay không phải luôn được kiểm chứng "
-        "bằng Cross-Validation trước khi triển khai.",
+        f"Về tác động của PCA, thực nghiệm cho thấy giảm chiều không giám sát bằng PCA "
+        f"không đồng nghĩa với việc cải thiện bài toán hồi quy có giám sát. Trên California "
+        f"Housing, PCA {k_pca}D làm R² giảm từ {vn(impact['r2_drop'].min(), 1)}% đến "
+        f"{vn(impact['r2_drop'].max(), 1)}% trên CV, và kết quả này được xác nhận lại trên "
+        f"tập Test. Với mô hình cây, PCA gây hại ngay cả khi giữ đủ 8 thành phần. PCA vẫn "
+        f"có giá trị trong phân tích cấu trúc dữ liệu, trực quan hóa 2D/3D hoặc với dữ liệu "
+        f"nhiều chiều; quyết định có dùng PCA hay không cần được kiểm chứng bằng "
+        f"Cross-Validation như trong bài tập này.",
         bold_part="Kết luận 3.", indent=True
     )
 
     add_callout(doc,
-        "HistGradientBoostingRegressor không dùng PCA được kiến nghị là mô hình triển "
-        "khai tối ưu:\n"
-        "R² = 0,8364  |  RMSE = 0,4665  |  MAE = 0,3118  |  σ(R²) = 0,0079  |  "
-        "Thời gian huấn luyện: 0,30 giây/fold",
+        f"{best_name} {best_cfg} được kiến nghị là mô hình triển khai:\n"
+        f"CV (Train):  R² = {vn(best_cv['R2_Mean'])} ± {vn(best_cv['R2_Std'])}  |  "
+        f"RMSE = {vn(best_cv['RMSE_Mean'])}  |  MAE = {vn(best_cv['MAE_Mean'])}\n"
+        f"Test hold-out:  R² = {vn(test_best['R2'])}  |  RMSE = {vn(test_best['RMSE'])}  |  "
+        f"MAE = {vn(test_best['MAE'])}",
         title="★ Mô hình được kiến nghị:"
     )
 
