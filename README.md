@@ -1,11 +1,5 @@
 # BÀI TẬP 1: XÂY DỰNG PIPELINE HỒI QUY VỚI TIỀN XỬ LÝ VÀ GIẢM CHIỀU PCA
 
-**Học phần:** Nhận dạng mẫu (*Pattern Recognition*)  
-**Chương trình:** Cao học / Thạc sĩ Công nghệ Thông tin  
-**Học viên:** Phạm Tuấn Anh (Mã HV: B26CHKH005 - Lớp: M26CQKH02-B)  
-**Giảng viên hướng dẫn:** TS. Nguyễn Xuân Đức  
-**Đơn vị:** Học viện Công nghệ Bưu chính Viễn thông  
-
 ---
 
 ## 1. Giới thiệu & Mục tiêu bài toán
@@ -95,4 +89,4 @@ python create_word_report.py
 ---
 
 ## 5. Giấy phép & Tác quyền
-Dự án được xây dựng phục vụ nghiên cứu và hoàn thành Bài tập 1 môn Nhận dạng mẫu - Học viện Công nghệ Bưu chính Viễn thông.
+Dự án được xây dựng phục vụ nghiên cứu và học tập bài toán hồi quy kết hợp giảm chiều dữ liệu PCA.

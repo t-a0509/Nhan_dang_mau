@@ -849,7 +849,7 @@ def build_report():
         "The Elements of Statistical Learning, 2nd ed. Springer.",
         "[7]  Ke, G. et al. (2017). LightGBM: A Highly Efficient Gradient Boosting "
         "Decision Tree. Advances in Neural Information Processing Systems (NeurIPS), 30.",
-        "[8]  Phạm Tuấn Anh (2026). Kho lưu trữ mã nguồn mở: Pipeline hồi quy với tiền xử lý "
+        "[8]  Kho lưu trữ mã nguồn mở: Pipeline hồi quy với tiền xử lý "
         "và giảm chiều PCA (Bài tập 1 - Môn Nhận dạng mẫu). "
         "GitHub Repository: https://github.com/t-a0509/Nhan_dang_mau",
     ]
