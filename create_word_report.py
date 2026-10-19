@@ -241,47 +241,15 @@ def add_hyperlink(paragraph, url, text, color="0056B3", underline=True, bold=Tru
     return hyperlink
 
 def add_repo_callout(doc, repo_url="https://github.com/t-a0509/Nhan_dang_mau"):
-    """Hộp thông tin nổi bật đính kèm liên kết GitHub mã nguồn của bài tập."""
-    tbl  = doc.add_table(rows=1, cols=1)
-    tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
-    cell = tbl.cell(0, 0)
-    set_cell_background(cell, "EBF3FA")
-    set_cell_margins(cell, top=140, bottom=140, left=180, right=180)
-    tcPr    = cell._element.get_or_add_tcPr()
-    borders = parse_xml(
-        f'<w:tcBorders {nsdecls("w")}>'
-        f'<w:top    w:val="none"/>'
-        f'<w:left   w:val="single" w:sz="24" w:space="0" w:color="1F4E79"/>'
-        f'<w:bottom w:val="none"/>'
-        f'<w:right  w:val="none"/>'
-        f'</w:tcBorders>'
-    )
-    tcPr.append(borders)
-    p = cell.paragraphs[0]
+    """Một dòng ghi liên kết Git của bài tập."""
+    p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(0)
-    p.paragraph_format.space_after  = Pt(0)
-    p.paragraph_format.line_spacing = 1.35
-
-    rb = p.add_run("🔗 LIÊN KẾT MÃ NGUỒN DỰ ÁN (GITHUB REPOSITORY)\n")
-    rb.font.name      = "Times New Roman"
-    rb.font.size      = Pt(11.5)
-    rb.font.bold      = True
-    rb.font.color.rgb = RGBColor(31, 78, 121)
-
-    r1 = p.add_run("Toàn bộ mã nguồn thực nghiệm, pipeline xử lý dữ liệu và biểu đồ phân tích được lưu trữ công khai tại kho lưu trữ: ")
-    r1.font.name      = "Times New Roman"
-    r1.font.size      = Pt(11)
-    r1.font.color.rgb = RGBColor(40, 40, 40)
-
-    add_hyperlink(p, repo_url, repo_url, color="0056B3", underline=True, bold=True)
-
-    r2 = p.add_run("\n(Bao gồm: regression_pipeline.py, create_word_report.py, requirements.txt và toàn bộ biểu đồ thực nghiệm chất lượng cao).")
-    r2.font.name      = "Times New Roman"
-    r2.font.size      = Pt(10.5)
-    r2.font.italic    = True
-    r2.font.color.rgb = RGBColor(80, 80, 80)
-
-    doc.add_paragraph().paragraph_format.space_after = Pt(6)
+    p.paragraph_format.space_after  = Pt(8)
+    rb = p.add_run("Link Git: ")
+    rb.font.name = "Times New Roman"
+    rb.font.size = Pt(12)
+    rb.font.bold = True
+    add_hyperlink(p, repo_url, repo_url, color="0056B3", underline=True, bold=False)
 
 def add_figure(doc, rel_path, caption, width=6.0):
     """Chèn hình ảnh kèm chú thích căn giữa, in nghiêng."""
@@ -1082,9 +1050,6 @@ def build_report():
         "The Elements of Statistical Learning, 2nd ed. Springer.",
         "[7]  Ke, G. et al. (2017). LightGBM: A Highly Efficient Gradient Boosting "
         "Decision Tree. Advances in Neural Information Processing Systems (NeurIPS), 30.",
-        "[8]  Kho lưu trữ mã nguồn mở: Pipeline hồi quy với tiền xử lý "
-        "và giảm chiều PCA (Bài tập 1 - Môn Nhận dạng mẫu). "
-        "GitHub Repository: https://github.com/t-a0509/Nhan_dang_mau",
     ]
     for ref in refs:
         p = doc.add_paragraph()
